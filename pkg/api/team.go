@@ -2,12 +2,14 @@ package api
 
 import (
 	"errors"
+	"fmt"
 	"net/http"
 
 	"github.com/grafana/grafana/pkg/api/dtos"
 	"github.com/grafana/grafana/pkg/api/response"
 	"github.com/grafana/grafana/pkg/bus"
 	"github.com/grafana/grafana/pkg/models"
+	"github.com/grafana/grafana/pkg/services/accesscontrol"
 	"github.com/grafana/grafana/pkg/services/sqlstore"
 	"github.com/grafana/grafana/pkg/util"
 	"github.com/grafana/grafana/pkg/web"
@@ -135,6 +137,22 @@ func (hs *HTTPServer) SearchTeams(c *models.ReqContext) response.Response {
 	return response.JSON(200, query.Result)
 }
 
+func (hs *HTTPServer) getTeamAccessControlMetadata(c *models.ReqContext, teamID int64) (accesscontrol.Metadata, error) {
+	if hs.AccessControl.IsDisabled() || !c.QueryBool("accesscontrol") {
+		return nil, nil
+	}
+
+	userPermissions, err := hs.AccessControl.GetUserPermissions(c.Req.Context(), c.SignedInUser)
+	if err != nil || len(userPermissions) == 0 {
+		return nil, err
+	}
+
+	key := fmt.Sprintf("%d", teamID)
+	teamIDs := map[string]bool{key: true}
+
+	return accesscontrol.GetResourcesMetadata(c.Req.Context(), userPermissions, "teams", teamIDs)[key], nil
+}
+
 // GET /api/teams/:teamId
 func (hs *HTTPServer) GetTeamByID(c *models.ReqContext) response.Response {
 	query := models.GetTeamByIdQuery{
@@ -151,6 +169,12 @@ func (hs *HTTPServer) GetTeamByID(c *models.ReqContext) response.Response {
 
 		return response.Error(500, "Failed to get Team", err)
 	}
+
+	metadata, err := hs.getTeamAccessControlMetadata(c, query.Result.Id)
+	if err != nil {
+		hs.log.Warn("could not fetch accesscontrol metadata", "team", query.Id, "error", err)
+	}
+	query.Result.AccessControl = metadata
 
 	query.Result.AvatarUrl = dtos.GetGravatarUrlWithDefault(query.Result.Email, query.Result.Name)
 	return response.JSON(200, &query.Result)
